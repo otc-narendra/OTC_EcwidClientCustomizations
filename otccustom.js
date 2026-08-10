@@ -156,7 +156,50 @@
     qtyInput:      '#qty-field',
     // Wrapper around the add-to-bag button, used to hang the cap notice after it:
     addButtonWrap: '.details-product-purchase__add-more, .details-product-purchase__control',
+    // Container of Ecwid's own availability line. Observed wording, 2026-08-10:
+    //   empty bag        -> "In stock: 23 available"
+    //   items in the bag -> "2 items in the bag   (21 more available)"
+    // Both figures are per-variation and overstate a shared pool.
+    stockPlace:    '.details-product-purchase__place',
   };
+
+  // Ecwid's availability figure counts only the selected variation, so with 5 Adult and
+  // 2 Child in the bag it offers "18 more" on Adult and "21 more" on Child when the true
+  // shared remainder is 16. Rewriting the number in place beats adding a second, correct
+  // line beside a wrong one — customers read Ecwid's, and two numbers is worse than
+  // either. Only the digits change; the wording and position stay Ecwid's.
+  //
+  // Edits the text node's value rather than replacing nodes, so it does not trip the
+  // MutationObserver (which watches childList, not characterData) and cannot loop.
+  //
+  // Returns true if it found a figure to correct — the caller falls back to its own
+  // notice if Ecwid's wording ever changes out from under this.
+  function correctEcwidRemaining(addable) {
+    var place = document.querySelector(SEL.stockPlace);
+    if (!place || typeof addable !== 'number') return false;
+
+    var patterns = [
+      /\((\d+)\s+more available\)/i,   // "…(21 more available)"
+      /In stock:\s*(\d+)\s+available/i, // "In stock: 23 available"
+    ];
+
+    var walker = document.createTreeWalker(place, NodeFilter.SHOW_TEXT, null, false);
+    var node;
+    while ((node = walker.nextNode())) {
+      for (var i = 0; i < patterns.length; i++) {
+        var m = node.nodeValue.match(patterns[i]);
+        if (!m) continue;
+        if (Number(m[1]) !== addable) {
+          node.nodeValue = node.nodeValue.replace(
+            patterns[i],
+            m[0].replace(/\d+/, String(addable))
+          );
+        }
+        return true;
+      }
+    }
+    return false;
+  }
 
   // ─── FEATURE 3: CART QUANTITY CAP ─────────────────────────────────────────
   // The reason this file exists. Ecwid enforces stock per variation and never sums
@@ -198,9 +241,14 @@
       input.max = String(Math.max(1, addable));
       if (Number(input.value) > addable) input.value = String(Math.max(1, addable));
 
+      // Preferred: correct Ecwid's own figure. Only if its wording has moved on do we
+      // add a line of our own, so a platform change degrades to a second number rather
+      // than to silence.
+      var corrected = correctEcwidRemaining(addable);
+
       if (addable <= 0) {
         showCapNotice(input, CONFIG.capNoticeNone.replace('{n}', data.masterRemaining));
-      } else if (inCart > 0) {
+      } else if (!corrected && inCart > 0) {
         showCapNotice(input, CONFIG.capNotice.replace('{n}', addable));
       }
     });
