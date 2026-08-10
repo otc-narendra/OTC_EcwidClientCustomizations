@@ -9,9 +9,15 @@
   // the stub numbers are invented, and augmentStockMessage() prints masterRemaining
   // without checking that the data belongs to the product on screen — so a stub live
   // on the storefront tells customers a made-up figure on every product with options.
+  //
+  // showOptionLabels is off because it now says nothing new. otc-order-processor syncs
+  // every variation to the shared base quantity, so a per-choice "(23 left)" beside
+  // Adult and again beside Child reads as 46 seats when there are 23 — the master
+  // suffix already states the real figure once.
   var CONFIG = {
-    backendUrl: null,
+    backendUrl: 'https://webhook.ourtablefarm.com',
     useStub: false,
+    showOptionLabels: false,
     labelInStock:   '({n} left)',
     labelSoldOut:   '(sold out)',
     masterSuffix:   '(total {n} available)',
@@ -111,7 +117,7 @@
   // Reads option name and value directly from input[name] and input[value] —
   // no label text scraping needed.
   function applyOptionLabels(inventoryData) {
-    if (!inventoryData) return;
+    if (!CONFIG.showOptionLabels || !inventoryData) return;
 
     var scope = document.querySelector(SEL.productWidget) || document;
     var items = scope.querySelectorAll(SEL.radioItem);
@@ -148,6 +154,11 @@
       el.parentNode.removeChild(el);
     });
     if (!inventoryData) return;
+
+    // masterRemaining is null when the product has no shared pool — stock is genuinely
+    // tracked per variation, so there is no total to state. Say nothing rather than
+    // printing "(total null available)".
+    if (typeof inventoryData.masterRemaining !== 'number') return;
 
     var stockEl = findStockMessageElement();
     if (!stockEl) return;
