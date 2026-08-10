@@ -71,6 +71,12 @@
     // for a frame or two before ours replaced it. Refreshed whenever the cart changes,
     // which is the only thing that can move it.
     cartQty:       null,
+    // Timestamp before which the availability line stays hidden regardless of having a
+    // correct figure. Ecwid repaints the purchase panel *after* announcing a variation
+    // change, so correcting synchronously and revealing immediately showed our number,
+    // then Ecwid's, then ours again once the observer caught up. Holding through the
+    // repaint turns that into a brief blank instead of a brief lie.
+    holdHiddenUntil: 0,
   };
 
   // ─── FETCH INVENTORY ───────────────────────────────────────────────────────
@@ -270,8 +276,10 @@
     // add a line of our own, so a platform change degrades to a second number rather
     // than to silence.
     var corrected = correctEcwidRemaining(addable);
-    setAvailabilityVisible(true);
-    clearTimeout(state.revealTimer);
+    if (Date.now() >= state.holdHiddenUntil) {
+      setAvailabilityVisible(true);
+      clearTimeout(state.revealTimer);
+    }
 
     if (addable <= 0) {
       showCapNotice(input, CONFIG.capNoticeNone.replace('{n}', data.masterRemaining));
@@ -303,7 +311,14 @@
   // it to 16. Re-apply on a short decaying schedule so whichever render wins last is
   // still corrected. Every step is idempotent: the cap is recomputed from live cart data
   // and the text rewrite no-ops when the figure already matches.
-  var CAP_RETRY_DELAYS_MS = [0, 250, 750, 1500, 3000];
+  // 400 sits just past VARIATION_REPAINT_HOLD_MS so the line reveals as soon as the hold
+  // lifts rather than waiting for the next step; the later ones catch a slow redraw.
+  var CAP_RETRY_DELAYS_MS = [0, 250, 400, 750, 1500, 3000];
+
+  // How long Ecwid's post-change repaint is allowed to take before we show a figure.
+  // Longer than the observer's 150ms debounce, so a redraw that lands late is still
+  // corrected before anything becomes visible.
+  var VARIATION_REPAINT_HOLD_MS = 350;
 
   // Ecwid draws its own per-variation figure immediately; ours needs a network round
   // trip, so for about a second the page showed 20 before correcting to 15. A briefly
@@ -462,6 +477,7 @@
       state.currentOptions = {};
       state.inventoryData = null;
       state.cartQty = null;
+      state.holdHiddenUntil = 0;
       // Hide before the fetch begins, and arm the fallback in case it never lands.
       setAvailabilityVisible(false);
       revealAvailabilityRegardless();
@@ -493,8 +509,11 @@
       // cart total is cached, so the corrected number is in place before the next
       // paint instead of a frame or two later.
       setAvailabilityVisible(false);
+      // Ride out Ecwid's repaint before showing anything. The retry schedule re-applies
+      // past this point, so the figure revealed is the one that survived the redraw.
+      state.holdHiddenUntil = Date.now() + VARIATION_REPAINT_HOLD_MS;
       revealAvailabilityRegardless();
-      applyQuantityCap();
+      applyQuantityCapUntilItSticks();
     });
 
     // Re-apply option labels whenever the cart changes so counts stay accurate
