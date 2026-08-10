@@ -10,7 +10,19 @@ Client-side JavaScript that runs on the OTC Ecwid storefront on every page load.
 
 They stay behind flags for a product that ever tracks stock genuinely per variation, where base and variation figures would legitimately differ.
 
-**The inventory fetch stays on** — the remaining count is there to feed cart-quantity enforcement, which is *not* redundant. Ecwid checks each variation separately and never sums across them, so one cart can still take the full remainder of every variation at once (with 23 left, 23 Adult + 23 Child both pass). That enforcement is not yet built; see the TODO in `otc-order-processor/CLAUDE.md`.
+**Feature 3, the cart quantity cap, is the one that earns its keep** (`enforceCartCap`). Ecwid checks each variation separately and never sums across them, so with 23 seats left both Adult and Child read 23 and one cart could take 46. Product-level `maxPurchaseQuantity` does not aggregate either — verified 2026-08-10 by putting 3+3 in a cart against a cap of 3 and being offered checkout — so there is no server-side way to close this and the browser is the only place it can be done.
+
+It caps the quantity field at `masterRemaining` minus what the bag already holds for that product across every variation, and rewrites Ecwid's own availability figure to the same number. **It caps, it does not block:** there is no pre-add hook in the Ecwid JS API, so a determined customer can still exceed it, and two simultaneous shoppers see the same number. The oversold alert in `otc-order-processor` is the backstop.
+
+### Timing, which took most of the effort
+
+Three separate races, all fixed by preferring a brief blank over a brief lie — Ecwid's figure is the one customers trust, and they can act on it before it settles:
+
+- **`max` alone is not enforcement.** On a number input it only constrains the spinner arrows, and Ecwid's add handler does not check validity. A delegated `input` listener clamps the typed value, attached once to the document so it survives re-renders.
+- **On load** the correction ran before Ecwid had drawn its line, and `startObserver()` was called *after* `applyQuantityCap()` so the observer missed the render that discarded our work. The observer now starts first — that ordering is load-bearing — and the cap re-applies on a decaying schedule.
+- **On variation change** Ecwid repaints *after* announcing the change, so correcting synchronously and revealing immediately showed ours, then Ecwid's, then ours again. The line is now held hidden for `VARIATION_REPAINT_HOLD_MS` (350ms, longer than the observer's 150ms debounce) and revealed at the 400ms retry, so what appears is the figure that survived the repaint.
+
+Every reveal path has a way out: a 4s timer, the fetch-failure handler, and leaving the product page all restore visibility. A fetch that never lands must leave Ecwid's own number on screen — wrong, but present, as the page behaved before any of this existed.
 
 The two features, when enabled:
 
