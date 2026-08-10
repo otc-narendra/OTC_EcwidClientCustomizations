@@ -65,6 +65,12 @@
     // How many more units may be added right now, or null when nothing is being
     // enforced. Read by the delegated input handler.
     addableCap:    null,
+    // Units of this product already in the bag, summed across variations. Cached so
+    // switching variation can correct the figure synchronously: Ecwid.Cart.get is
+    // asynchronous, and going back to it on every redraw let Ecwid's own number show
+    // for a frame or two before ours replaced it. Refreshed whenever the cart changes,
+    // which is the only thing that can move it.
+    cartQty:       null,
   };
 
   // ─── FETCH INVENTORY ───────────────────────────────────────────────────────
@@ -218,40 +224,60 @@
     });
 
     var data = state.inventoryData;
-    var input = document.querySelector(SEL.qtyInput);
-    if (!input) return;
 
-    // No shared pool to enforce — stock is genuinely per-variation, so leave Ecwid to it.
-    if (!data || typeof data.masterRemaining !== 'number') {
-      state.addableCap = null;
-      input.removeAttribute('max');
+    // Not known yet — keep Ecwid's uncorrected figure out of sight.
+    if (!data) {
+      setAvailabilityVisible(false);
       return;
     }
 
+    var input = document.querySelector(SEL.qtyInput);
+    if (!input) return;
+
+    // No shared pool to enforce — stock is genuinely per-variation, so leave Ecwid to
+    // it, figure and all.
+    if (typeof data.masterRemaining !== 'number') {
+      state.addableCap = null;
+      input.removeAttribute('max');
+      setAvailabilityVisible(true);
+      return;
+    }
+
+    if (typeof state.cartQty === 'number') {
+      applyCapWithCartQty(data, input, state.cartQty);
+      return;
+    }
     cartQuantityForProduct(state.productId, function (inCart) {
-      // CONFIG.qtyFieldAddsToCart records what the field means. If it is the number to
-      // ADD, what is already in the bag has to be subtracted; if it SETS the line
-      // quantity, the bag total for this variation is being replaced rather than added
-      // to. Getting this wrong either under-sells or lets the cap be exceeded.
-      var addable = CONFIG.qtyFieldAddsToCart
-        ? Math.max(0, data.masterRemaining - inCart)
-        : data.masterRemaining;
-
-      state.addableCap = addable;
-      input.max = String(Math.max(1, addable));
-      if (Number(input.value) > addable) input.value = String(Math.max(1, addable));
-
-      // Preferred: correct Ecwid's own figure. Only if its wording has moved on do we
-      // add a line of our own, so a platform change degrades to a second number rather
-      // than to silence.
-      var corrected = correctEcwidRemaining(addable);
-
-      if (addable <= 0) {
-        showCapNotice(input, CONFIG.capNoticeNone.replace('{n}', data.masterRemaining));
-      } else if (!corrected && inCart > 0) {
-        showCapNotice(input, CONFIG.capNotice.replace('{n}', addable));
-      }
+      state.cartQty = inCart;
+      applyCapWithCartQty(data, input, inCart);
     });
+  }
+
+  function applyCapWithCartQty(data, input, inCart) {
+    // CONFIG.qtyFieldAddsToCart records what the field means. If it is the number to
+    // ADD, what is already in the bag has to be subtracted; if it SETS the line
+    // quantity, the bag total for this variation is being replaced rather than added
+    // to. Getting this wrong either under-sells or lets the cap be exceeded.
+    var addable = CONFIG.qtyFieldAddsToCart
+      ? Math.max(0, data.masterRemaining - inCart)
+      : data.masterRemaining;
+
+    state.addableCap = addable;
+    input.max = String(Math.max(1, addable));
+    if (Number(input.value) > addable) input.value = String(Math.max(1, addable));
+
+    // Preferred: correct Ecwid's own figure. Only if its wording has moved on do we
+    // add a line of our own, so a platform change degrades to a second number rather
+    // than to silence.
+    var corrected = correctEcwidRemaining(addable);
+    setAvailabilityVisible(true);
+    clearTimeout(state.revealTimer);
+
+    if (addable <= 0) {
+      showCapNotice(input, CONFIG.capNoticeNone.replace('{n}', data.masterRemaining));
+    } else if (!corrected && inCart > 0) {
+      showCapNotice(input, CONFIG.capNotice.replace('{n}', addable));
+    }
   }
 
   // `max` on a number input only constrains the spinner arrows — it does not stop
@@ -278,6 +304,29 @@
   // still corrected. Every step is idempotent: the cap is recomputed from live cart data
   // and the text rewrite no-ops when the figure already matches.
   var CAP_RETRY_DELAYS_MS = [0, 250, 750, 1500, 3000];
+
+  // Ecwid draws its own per-variation figure immediately; ours needs a network round
+  // trip, so for about a second the page showed 20 before correcting to 15. A briefly
+  // wrong number is worse than a briefly absent one — a customer glancing at the page
+  // may act on it. Hide the line until the true figure is known, then reveal it.
+  //
+  // visibility rather than display, so the layout does not jump when it appears.
+  function setAvailabilityVisible(visible) {
+    var place = document.querySelector(SEL.stockPlace);
+    if (!place) return;
+    place.style.visibility = visible ? '' : 'hidden';
+  }
+
+  // A fetch that never returns must not leave the line hidden for good. Whatever
+  // happens, Ecwid's own figure is back on screen within this window — wrong, but
+  // present, which is how the page behaved before any of this existed.
+  var AVAILABILITY_REVEAL_TIMEOUT_MS = 4000;
+
+  function revealAvailabilityRegardless() {
+    clearTimeout(state.revealTimer);
+    state.revealTimer = setTimeout(function () { setAvailabilityVisible(true); },
+      AVAILABILITY_REVEAL_TIMEOUT_MS);
+  }
 
   function applyQuantityCapUntilItSticks() {
     CAP_RETRY_DELAYS_MS.forEach(function (delay) {
@@ -400,6 +449,8 @@
 
     Ecwid.OnPageLoaded.add(function (page) {
       if (page.type !== 'PRODUCT') {
+        clearTimeout(state.revealTimer);
+        setAvailabilityVisible(true);
         stopObserver();
         state.inventoryData = null;
         state.productId = null;
@@ -409,6 +460,11 @@
 
       state.productId = page.productId;
       state.currentOptions = {};
+      state.inventoryData = null;
+      state.cartQty = null;
+      // Hide before the fetch begins, and arm the fallback in case it never lands.
+      setAvailabilityVisible(false);
+      revealAvailabilityRegardless();
 
       fetchInventory(Ecwid.getOwnerId(), page.productId)
         .then(function (data) {
@@ -422,6 +478,8 @@
         })
         .catch(function (err) {
           console.warn('[OTC] Inventory fetch failed for product ' + page.productId + ':', err);
+          // Fall back to Ecwid's own figure rather than leaving the line blank.
+          setAvailabilityVisible(true);
         });
     });
 
@@ -430,7 +488,12 @@
     Ecwid.OnProductSelectedOptionsChanged.add(function (payload) {
       state.currentOptions = payload.newOptions || {};
       augmentStockMessage(state.inventoryData);
-      // Switching variation re-renders the purchase panel, so the cap must be re-applied.
+      // Switching variation re-renders the purchase panel with Ecwid's own
+      // per-variation figure. Hide it, then re-apply — which is synchronous now the
+      // cart total is cached, so the corrected number is in place before the next
+      // paint instead of a frame or two later.
+      setAvailabilityVisible(false);
+      revealAvailabilityRegardless();
       applyQuantityCap();
     });
 
@@ -439,10 +502,13 @@
     // The cart changing is what moves the cap: adding 2 Adult reduces what may still be
     // added as Child. Only meaningful on a product page, where there is a field to cap.
     Ecwid.OnCartChanged.add(function () {
-      if (state.productId && state.inventoryData) {
+      if (!state.productId || !state.inventoryData) return;
+      // Refresh the cached total first: this event is the only thing that can move it.
+      cartQuantityForProduct(state.productId, function (inCart) {
+        state.cartQty = inCart;
         applyOptionLabels(state.inventoryData);
         applyQuantityCap();
-      }
+      });
     });
 
   });
