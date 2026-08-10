@@ -4,10 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Purpose
 
-Client-side JavaScript that runs on the OTC Ecwid storefront on every page load. Loaded automatically via a custom Ecwid app installation. Currently implements two features on product pages:
+Client-side JavaScript that runs on the OTC Ecwid storefront on every page load. Loaded automatically via a custom Ecwid app installation.
+
+**Both display features are currently OFF** (`showOptionLabels`, `showMasterSuffix`), and the reason matters. They were written when Ecwid's own stock figure was wrong: Ecwid tracks stock per variation and ignores the product-level quantity, so the Aug 14 pizza night showed Adult "Out of stock" while 23 seats were free. `otc-order-processor` now syncs every variation to the shared base quantity, which makes Ecwid's native "In stock: N available" correct — so the annotations began repeating it. The master suffix rendered literally "In stock: 23 available (total 23 available)". Fixing the data made the display redundant.
+
+They stay behind flags for a product that ever tracks stock genuinely per variation, where base and variation figures would legitimately differ.
+
+**The inventory fetch stays on** — the remaining count is there to feed cart-quantity enforcement, which is *not* redundant. Ecwid checks each variation separately and never sums across them, so one cart can still take the full remainder of every variation at once (with 23 left, 23 Adult + 23 Child both pass). That enforcement is not yet built; see the TODO in `otc-order-processor/CLAUDE.md`.
+
+The two features, when enabled:
 
 1. **Option label annotation** — appends remaining stock counts (e.g. `(4 left)` / `(sold out)`) next to each radio button choice
-2. **Stock message augmentation** — appends `(total N available)` to Ecwid's native "In stock: xx available" heading after a customer selects a variation
+2. **Stock message augmentation** — appends `(total N available)` to Ecwid's native "In stock: xx available" heading. Note it is wired only to `OnProductSelectedOptionsChanged`, so it does not render on initial page load with the default variation selected — fix that before re-enabling.
 
 ## Architecture
 
@@ -38,7 +46,7 @@ made-up number on every product that has options. It did exactly that on 2026-08
 the app was installed while `backendUrl` was still null — every pizza night reported
 "(total 10 available)".
 
-Set `CONFIG.backendUrl` to enable real inventory data. The backend must respond to:
+`CONFIG.backendUrl` is set to `https://webhook.ourtablefarm.com`, live since 2026-08-10. The backend responds to:
 
 ```
 GET {backendUrl}/inventory?storeId={storeId}&productId={productId}

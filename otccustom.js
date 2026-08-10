@@ -10,14 +10,25 @@
   // without checking that the data belongs to the product on screen — so a stub live
   // on the storefront tells customers a made-up figure on every product with options.
   //
-  // showOptionLabels is off because it now says nothing new. otc-order-processor syncs
-  // every variation to the shared base quantity, so a per-choice "(23 left)" beside
-  // Adult and again beside Child reads as 46 seats when there are 23 — the master
-  // suffix already states the real figure once.
+  // Both display features are off, and for the same reason: otc-order-processor now syncs
+  // every variation to the shared base quantity, so Ecwid's own "In stock: N available"
+  // already states the true remainder. A per-choice "(23 left)" beside Adult and again
+  // beside Child reads as 46 seats when there are 23, and the master suffix rendered
+  // "In stock: 23 available (total 23 available)" — saying the same number twice.
+  //
+  // Both earned their place before the sync existed, when Adult sat at 0 while 23 seats
+  // were free and Ecwid's figure was simply wrong. Fixing the data made the annotations
+  // redundant. They are kept behind flags for a product that ever tracks stock genuinely
+  // per variation, where the base and the variation figures would legitimately differ.
+  //
+  // The inventory fetch stays on: the remaining count feeds cart-quantity enforcement,
+  // which is not redundant — Ecwid checks each variation separately and never sums them,
+  // so one cart can still take the full remainder of every variation at once.
   var CONFIG = {
     backendUrl: 'https://webhook.ourtablefarm.com',
     useStub: false,
     showOptionLabels: false,
+    showMasterSuffix: false,
     labelInStock:   '({n} left)',
     labelSoldOut:   '(sold out)',
     masterSuffix:   '(total {n} available)',
@@ -153,7 +164,7 @@
     document.querySelectorAll('[data-otc-master]').forEach(function (el) {
       el.parentNode.removeChild(el);
     });
-    if (!inventoryData) return;
+    if (!CONFIG.showMasterSuffix || !inventoryData) return;
 
     // masterRemaining is null when the product has no shared pool — stock is genuinely
     // tracked per variation, so there is no total to state. Say nothing rather than
