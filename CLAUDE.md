@@ -29,6 +29,15 @@ Injected DOM nodes carry `data-otc-label` or `data-otc-master` attributes. The M
 
 ## Backend integration (not yet wired)
 
+**While `CONFIG.backendUrl` is null this script renders nothing**, leaving the storefront
+exactly as Ecwid draws it. That is deliberate. `CONFIG.useStub` switches `STUB_DATA` back
+on for local testing and **must never be true in the deployed file**: the stub figures are
+invented, and `augmentStockMessage()` prints `masterRemaining` without checking the data
+belongs to the product on screen, so a stub live on the storefront shows customers a
+made-up number on every product that has options. It did exactly that on 2026-08-10, when
+the app was installed while `backendUrl` was still null — every pizza night reported
+"(total 10 available)".
+
 Set `CONFIG.backendUrl` to enable real inventory data. The backend must respond to:
 
 ```

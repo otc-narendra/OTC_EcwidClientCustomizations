@@ -2,17 +2,23 @@
   'use strict';
 
   // ─── CONFIG ────────────────────────────────────────────────────────────────
-  // Set backendUrl to your inventory endpoint when the backend is ready.
-  // While null, STUB_DATA below is used instead.
+  // Set backendUrl to your inventory endpoint when the backend is ready. Until then
+  // this script renders nothing, leaving the storefront exactly as Ecwid draws it.
+  //
+  // useStub is for local testing ONLY and must never be true in the deployed file:
+  // the stub numbers are invented, and augmentStockMessage() prints masterRemaining
+  // without checking that the data belongs to the product on screen — so a stub live
+  // on the storefront tells customers a made-up figure on every product with options.
   var CONFIG = {
     backendUrl: null,
+    useStub: false,
     labelInStock:   '({n} left)',
     labelSoldOut:   '(sold out)',
     masterSuffix:   '(total {n} available)',
   };
 
   // ─── STUB DATA ─────────────────────────────────────────────────────────────
-  // Replace with real product/variation data to test locally.
+  // Local testing only — see CONFIG.useStub above.
   // Shape must match the backend contract:
   //   { masterRemaining: number,
   //     variations: [{ options: { [name]: value, ... }, remaining: number }] }
@@ -34,11 +40,12 @@
   };
 
   // ─── FETCH INVENTORY ───────────────────────────────────────────────────────
-  // Returns Promise<InventoryData>.
+  // Returns Promise<InventoryData|null>. null means "say nothing" — both render
+  // functions bail on falsy data, so the page is left untouched.
   // TO WIRE REAL BACKEND: set CONFIG.backendUrl above — no other changes needed.
   function fetchInventory(storeId, productId) {
     if (!CONFIG.backendUrl) {
-      return Promise.resolve(STUB_DATA);
+      return Promise.resolve(CONFIG.useStub ? STUB_DATA : null);
     }
     var url = CONFIG.backendUrl
       + '/inventory?storeId=' + storeId
