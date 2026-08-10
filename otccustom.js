@@ -271,6 +271,23 @@
     }, true);
   }
 
+  // On first load our correction can land before Ecwid has drawn its availability line,
+  // or on a text node Ecwid is about to replace — the page then showed Ecwid's own
+  // per-variation figure (18) until a variation change forced a redraw and we corrected
+  // it to 16. Re-apply on a short decaying schedule so whichever render wins last is
+  // still corrected. Every step is idempotent: the cap is recomputed from live cart data
+  // and the text rewrite no-ops when the figure already matches.
+  var CAP_RETRY_DELAYS_MS = [0, 250, 750, 1500, 3000];
+
+  function applyQuantityCapUntilItSticks() {
+    CAP_RETRY_DELAYS_MS.forEach(function (delay) {
+      setTimeout(function () {
+        // Bail if the customer has navigated away in the meantime.
+        if (state.inventoryData) applyQuantityCap();
+      }, delay);
+    });
+  }
+
   function showCapNotice(input, text) {
     var anchor = document.querySelector(SEL.addButtonWrap)
       || (input.closest ? input.closest('.form-control') : null)
@@ -396,9 +413,12 @@
       fetchInventory(Ecwid.getOwnerId(), page.productId)
         .then(function (data) {
           state.inventoryData = data;
-          applyOptionLabels(data);
-          applyQuantityCap();
+          // Observer first: Ecwid finishes rendering the purchase panel asynchronously,
+          // and starting the watch afterwards can miss the very render that discards our
+          // work. This ordering is load-bearing, not incidental.
           startObserver();
+          applyOptionLabels(data);
+          applyQuantityCapUntilItSticks();
         })
         .catch(function (err) {
           console.warn('[OTC] Inventory fetch failed for product ' + page.productId + ':', err);
