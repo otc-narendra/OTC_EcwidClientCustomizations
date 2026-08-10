@@ -29,9 +29,17 @@
     useStub: false,
     showOptionLabels: false,
     showMasterSuffix: false,
+    // The one feature that is not redundant — see FEATURE 3.
+    enforceCartCap: true,
+    // What the quantity field means. true  = "add this many more to the bag"
+    //                                false = "set this line to this many"
+    // Verify in the storefront before trusting it; the cap arithmetic depends on it.
+    qtyFieldAddsToCart: true,
     labelInStock:   '({n} left)',
     labelSoldOut:   '(sold out)',
     masterSuffix:   '(total {n} available)',
+    capNotice:      'Only {n} more available for this event.',
+    capNoticeNone:  'All {n} remaining places are already in your bag.',
   };
 
   // ─── STUB DATA ─────────────────────────────────────────────────────────────
@@ -54,6 +62,9 @@
     inventoryData: null,
     currentOptions: {},
     observer:      null,
+    // How many more units may be added right now, or null when nothing is being
+    // enforced. Read by the delegated input handler.
+    addableCap:    null,
   };
 
   // ─── FETCH INVENTORY ───────────────────────────────────────────────────────
@@ -101,7 +112,23 @@
 
   function isOurNode(n) {
     return n.nodeType === Node.ELEMENT_NODE
-      && (n.hasAttribute('data-otc-label') || n.hasAttribute('data-otc-master'));
+      && (n.hasAttribute('data-otc-label') || n.hasAttribute('data-otc-master')
+       || n.hasAttribute('data-otc-cap'));
+  }
+
+  // Total units of one product already in the bag, summed across every variation.
+  // Ecwid lists each variation as its own cart item, so Adult and Child appear
+  // separately and must be added together to compare against the shared pool.
+  function cartQuantityForProduct(productId, cb) {
+    Ecwid.Cart.get(function (cart) {
+      var total = 0;
+      (cart.items || []).forEach(function (item) {
+        if (item.product && String(item.product.id) === String(productId)) {
+          total += item.quantity || 0;
+        }
+      });
+      cb(total);
+    });
   }
 
   function debounce(fn, ms) {
@@ -122,7 +149,92 @@
     labelEl:       '.form-control__inline-label label',
     // "In stock: X available" heading confirmed via DevTools:
     stockMessage:  '.details-product-purchase__place span',
+    // Quantity field. A real id rather than a generated class, so the sturdiest
+    // selector here — confirmed 2026-08-10:
+    //   <input class="form-control__text" type="number" id="qty-field" name="ec-qty"
+    //          maxlength="10" min="1" value="2">
+    qtyInput:      '#qty-field',
+    // Wrapper around the add-to-bag button, used to hang the cap notice after it:
+    addButtonWrap: '.details-product-purchase__add-more, .details-product-purchase__control',
   };
+
+  // ─── FEATURE 3: CART QUANTITY CAP ─────────────────────────────────────────
+  // The reason this file exists. Ecwid enforces stock per variation and never sums
+  // across them, so with 23 seats left both Adult and Child read 23 and one cart can
+  // take 46. otc-order-processor keeps Ecwid honest between orders; only the browser
+  // can hold the line within a single cart.
+  //
+  // There is no pre-add hook in the Ecwid JS API, so this cannot block an add outright
+  // — it caps the quantity field before the fact. A determined customer can still get
+  // past it; the oversold alert in otc-order-processor is the backstop for that.
+  function applyQuantityCap() {
+    if (!CONFIG.enforceCartCap) return;
+
+    document.querySelectorAll('[data-otc-cap]').forEach(function (el) {
+      el.parentNode.removeChild(el);
+    });
+
+    var data = state.inventoryData;
+    var input = document.querySelector(SEL.qtyInput);
+    if (!input) return;
+
+    // No shared pool to enforce — stock is genuinely per-variation, so leave Ecwid to it.
+    if (!data || typeof data.masterRemaining !== 'number') {
+      state.addableCap = null;
+      input.removeAttribute('max');
+      return;
+    }
+
+    cartQuantityForProduct(state.productId, function (inCart) {
+      // CONFIG.qtyFieldAddsToCart records what the field means. If it is the number to
+      // ADD, what is already in the bag has to be subtracted; if it SETS the line
+      // quantity, the bag total for this variation is being replaced rather than added
+      // to. Getting this wrong either under-sells or lets the cap be exceeded.
+      var addable = CONFIG.qtyFieldAddsToCart
+        ? Math.max(0, data.masterRemaining - inCart)
+        : data.masterRemaining;
+
+      state.addableCap = addable;
+      input.max = String(Math.max(1, addable));
+      if (Number(input.value) > addable) input.value = String(Math.max(1, addable));
+
+      if (addable <= 0) {
+        showCapNotice(input, CONFIG.capNoticeNone.replace('{n}', data.masterRemaining));
+      } else if (inCart > 0) {
+        showCapNotice(input, CONFIG.capNotice.replace('{n}', addable));
+      }
+    });
+  }
+
+  // `max` on a number input only constrains the spinner arrows — it does not stop
+  // someone typing a larger figure, and Ecwid's add handler does not check validity.
+  // Clamping on input is what makes the cap bite. Delegated from the document so it
+  // survives Ecwid rebuilding the purchase panel, and installed once.
+  function installQuantityClamp() {
+    if (state.clampInstalled) return;
+    state.clampInstalled = true;
+
+    document.addEventListener('input', function (e) {
+      var t = e.target;
+      if (!t || t.id !== 'qty-field') return;
+      if (typeof state.addableCap !== 'number') return;
+      var cap = Math.max(1, state.addableCap);
+      if (Number(t.value) > cap) t.value = String(cap);
+    }, true);
+  }
+
+  function showCapNotice(input, text) {
+    var anchor = document.querySelector(SEL.addButtonWrap)
+      || (input.closest ? input.closest('.form-control') : null)
+      || input.parentNode;
+    if (!anchor || !anchor.parentNode) return;
+
+    var note = document.createElement('div');
+    note.setAttribute('data-otc-cap', '');
+    note.style.cssText = 'margin-top:6px;font-size:0.9em;opacity:0.8;';
+    note.textContent = text;
+    anchor.parentNode.insertBefore(note, anchor.nextSibling);
+  }
 
   // ─── FEATURE 1: OPTION LABEL ANNOTATION ───────────────────────────────────
   // Reads option name and value directly from input[name] and input[value] —
@@ -193,7 +305,10 @@
 
     var container = document.querySelector(SEL.productWidget) || document.body;
     var debouncedApply = debounce(function () {
-      if (state.inventoryData) applyOptionLabels(state.inventoryData);
+      if (!state.inventoryData) return;
+      applyOptionLabels(state.inventoryData);
+      // Ecwid rebuilds the purchase panel on re-render, which discards the max we set.
+      applyQuantityCap();
     }, 150);
 
     state.observer = new MutationObserver(function (mutations) {
@@ -216,6 +331,7 @@
 
   // ─── EVENT HOOKS ───────────────────────────────────────────────────────────
   Ecwid.OnAPILoaded.add(function () {
+    installQuantityClamp();
 
     Ecwid.OnPageLoaded.add(function (page) {
       if (page.type !== 'PRODUCT') {
@@ -233,6 +349,7 @@
         .then(function (data) {
           state.inventoryData = data;
           applyOptionLabels(data);
+          applyQuantityCap();
           startObserver();
         })
         .catch(function (err) {
@@ -245,13 +362,18 @@
     Ecwid.OnProductSelectedOptionsChanged.add(function (payload) {
       state.currentOptions = payload.newOptions || {};
       augmentStockMessage(state.inventoryData);
+      // Switching variation re-renders the purchase panel, so the cap must be re-applied.
+      applyQuantityCap();
     });
 
     // Re-apply option labels whenever the cart changes so counts stay accurate
     // (e.g. after a customer removes items from the bag).
+    // The cart changing is what moves the cap: adding 2 Adult reduces what may still be
+    // added as Child. Only meaningful on a product page, where there is a field to cap.
     Ecwid.OnCartChanged.add(function () {
       if (state.productId && state.inventoryData) {
         applyOptionLabels(state.inventoryData);
+        applyQuantityCap();
       }
     });
 
