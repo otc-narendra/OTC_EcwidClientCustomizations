@@ -34,23 +34,41 @@ The two features, when enabled:
 Single file: `otccustom.js` — an IIFE, no modules, no build step.
 
 ```
-CONFIG        Top of file — labels, backend URL (currently null → stub data)
-STUB_DATA     Hardcoded test data used while CONFIG.backendUrl is null
-fetchInventory()   Fetches from backend or returns STUB_DATA
-applyOptionLabels()   Feature 1 — annotates radio button labels
-augmentStockMessage()  Feature 2 — appends master stock to "In stock" heading
-MutationObserver  Re-runs applyOptionLabels when Ecwid re-renders the product widget
-Ecwid.OnAPILoaded → OnPageLoaded   Entry point; fires fetchInventory on PRODUCT pages
-Ecwid.OnProductSelectedOptionsChanged  Triggers Feature 2
-Ecwid.OnCartChanged   Re-applies labels after cart changes
+CONFIG        Top of file — feature flags, labels, backendUrl
+STUB_DATA     Local-testing fixture, used only when CONFIG.useStub is true
+fetchInventory()          Fetches from backendUrl, or returns STUB_DATA
+
+Feature 3 — cart cap (enforceCartCap, ON):
+  cartQuantityForProduct()  Sums the bag across every variation of this product
+  applyQuantityCap()        Entry point; resolves cart qty then defers to the next
+  applyCapWithCartQty()     Sets the qty field's max to masterRemaining − inCart
+  installQuantityClamp()    Delegated input listener — `max` alone is not enforcement
+  correctEcwidRemaining()   Rewrites the digits in Ecwid's own availability text node
+  setAvailabilityVisible()  Hides that line through Ecwid's repaint (see Timing)
+  revealAvailabilityRegardless()  4s failsafe so the line can never stay hidden
+  applyQuantityCapUntilItSticks() Decaying retry schedule after load / variation change
+
+Features 1 & 2 — display (showOptionLabels, showMasterSuffix — both OFF):
+  applyOptionLabels()       Annotates radio button labels
+  augmentStockMessage()     Appends master stock to the "In stock" heading
+  worstRemainingForValue()  Worst case across combinations, for multi-option products
+
+MutationObserver  Re-applies the cap when Ecwid re-renders the product widget.
+                  startObserver() must run BEFORE the first cap application —
+                  that ordering is load-bearing, see Timing.
+Ecwid.OnAPILoaded → OnPageLoaded        Entry point; fetches on PRODUCT pages
+Ecwid.OnProductSelectedOptionsChanged   Re-caps after a variation change
+Ecwid.OnCartChanged                     Re-caps after the bag changes
 ```
 
 Injected DOM nodes carry `data-otc-label` or `data-otc-master` attributes. The MutationObserver filters these out to avoid re-triggering on its own mutations.
 
-## Backend integration (not yet wired)
+## Backend integration
 
-**While `CONFIG.backendUrl` is null this script renders nothing**, leaving the storefront
-exactly as Ecwid draws it. That is deliberate. `CONFIG.useStub` switches `STUB_DATA` back
+**Live since 2026-08-10.** `CONFIG.backendUrl` is `https://webhook.ourtablefarm.com`.
+
+**Setting `CONFIG.backendUrl` back to null makes this script render nothing**, leaving the
+storefront exactly as Ecwid draws it. That is the safe off switch. `CONFIG.useStub` switches `STUB_DATA` back
 on for local testing and **must never be true in the deployed file**: the stub figures are
 invented, and `augmentStockMessage()` prints `masterRemaining` without checking the data
 belongs to the product on screen, so a stub live on the storefront shows customers a
@@ -58,7 +76,7 @@ made-up number on every product that has options. It did exactly that on 2026-08
 the app was installed while `backendUrl` was still null — every pizza night reported
 "(total 10 available)".
 
-`CONFIG.backendUrl` is set to `https://webhook.ourtablefarm.com`, live since 2026-08-10. The backend responds to:
+The backend responds to:
 
 ```
 GET {backendUrl}/inventory?storeId={storeId}&productId={productId}
@@ -74,7 +92,15 @@ Response shape:
 }
 ```
 
-The planned backend endpoint is `GET /ecwid/product/:id/stock` on `otc-webhook-server` (see that repo's TODO). No other code changes are needed here once the URL is set.
+The endpoint is `GET /inventory` on **otc-webhook-server** (`lib/inventory.js` shapes the
+payload and is unit-tested there; the route is thin). It is public and unauthenticated by
+necessity — a shared secret in browser JavaScript is not a secret — so it validates
+`storeId` against `ECWID_STORE_ID`, restricts CORS to `https://www.ourtable.us`, caches
+15s, and returns stock fields only, never price or SKU. That repo's CLAUDE.md owns the
+details; do not duplicate them here.
+
+An earlier plan called this `GET /ecwid/product/:id/stock`. That name was never built —
+`/inventory` superseded it.
 
 ## CSS selectors
 
@@ -82,8 +108,56 @@ Ecwid does not document its CSS classes. The selectors in `SEL` were confirmed v
 
 ## Deployment
 
-No build step. Edit `otccustom.js`, commit, and push. The file is served directly via the custom Ecwid app — Ecwid loads it on every storefront page visit.
+No build step. Edit `otccustom.js`, commit, and push to GitHub — **Cloudflare Pages
+deploys this repo's root automatically**, and the Ecwid custom app is registered against
+the resulting URL:
+
+```
+https://otc-ecwidclientcustomizations.pages.dev/otccustom.js
+```
+
+Ecwid fetches that URL on every storefront page visit. There is no upload step and no copy
+of the file inside Ecwid — the custom app holds only the URL. Pages sends
+`cache-control: max-age=0, must-revalidate`, so a push propagates immediately and no
+cache-busting query string is needed (Pages ignores query strings for cache keying anyway).
+
+### Two different Cloudflare products are involved — do not conflate them
+
+| | Serves | Path |
+|---|---|---|
+| Cloudflare **Pages** | `otccustom.js`, static | `otc-ecwidclientcustomizations.pages.dev`, from the edge POP |
+| **cloudflared** tunnel | `GET /inventory`, dynamic | `webhook.ourtablefarm.com` → OTC-SRV-ITSUPPORT:3100 |
+
+Only the tunnel touches our server. The script itself never does.
+
+### Why not host it on Weebly (evaluated and rejected 2026-08-10)
+
+`www.ourtable.us` is Weebly, fronted by Cloudflare. Serving `otccustom.js` from there
+would be **slower, not faster**, and it was considered specifically to speed up loading:
+
+- Weebly's origin is a single datacenter (`x-host: blu143.sf2p.intern.weebly.net`), and the
+  site sends `cache-control: max-age=30, private, no-store`, so Cloudflare is proxying
+  rather than caching it. Pages serves from whichever edge POP is nearest the customer —
+  measured 105ms from this host.
+- It trades push-to-deploy for manual re-uploads, and Weebly's uploader may not serve `.js`
+  with a usable MIME type.
+
+The only real cost of the current setup is one extra TLS handshake to `pages.dev` on a
+first visit. If that ever matters, point a custom domain on the existing Cloudflare zone at
+the Pages project — that keeps edge delivery *and* the deploy pipeline. Note that the
+`/inventory` fetch is cross-origin regardless of where the script lives.
+
+Perceived lag in the availability figure is **not** download time — it is the deliberate
+350ms `VARIATION_REPAINT_HOLD_MS` hold and retry schedule described under **Timing** above.
+No hosting change will affect it.
 
 ## No tests
 
-There is no test suite. Test locally using `STUB_DATA` (set `CONFIG.backendUrl = null`) or point `CONFIG.backendUrl` at a local backend instance.
+There is no test suite. Test locally with `CONFIG.useStub = true`, or point
+`CONFIG.backendUrl` at a local otc-webhook-server instance. **Never commit `useStub: true`** —
+see the warning under Backend integration.
+
+Verification is in-browser via DevTools. The checks that actually caught bugs: read the
+qty field's `max` attribute, type a number above it and confirm it clamps, and compare the
+availability figure across a hard reload and a variation switch with a non-empty bag —
+every timing bug showed up as a brief wrong number, not a wrong final number.
