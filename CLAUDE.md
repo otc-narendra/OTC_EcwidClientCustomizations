@@ -29,6 +29,27 @@ The two features, when enabled:
 1. **Option label annotation** — appends remaining stock counts (e.g. `(4 left)` / `(sold out)`) next to each radio button choice
 2. **Stock message augmentation** — appends `(total N available)` to Ecwid's native "In stock: xx available" heading. Note it is wired only to `OnProductSelectedOptionsChanged`, so it does not render on initial page load with the default variation selected — fix that before re-enabling.
 
+## Gift card box (Feature 4, WP-3b, 2026-10-27) — `CONFIG.giftCard: 'test'`
+
+Gift card plan `otc-qbo-admin/gift-cards-plan-brief.md`. A "Gift card" panel on the checkout
+(card number + PIN, Apply / Remove, "$X available, $Y applied"). Apply POSTs to webhook-server's
+`/giftcard/apply`; the answer's token (never the card) goes into the hidden extra field
+`otcGiftCardToken`, then `Ecwid.refreshConfig()` — WP-3a proved the relay sees a new value only
+after that call. `/giftcard/status` fills in "$Y applied" after the relay has run. The order
+confirmation page shows what the card pays and the remaining balance, then the token is cleared and
+pushed empty, so the next order in the session doesn't carry it. sessionStorage keeps
+`{token, last4, balance}` (2 h) so a reload keeps the card; the card number and PIN exist only in
+the two inputs and are cleared when Apply answers.
+
+- **`'test'`** draws the box only in a browser that opened the store with `?otc-giftcard-test=1`
+  (remembered in localStorage; `=0` forgets it). **`'on'` only after WP-3c** charges the card when
+  the order arrives, and with webhook-server's `GIFT_CARD_REDEEM=on`.
+- **Selectors are unconfirmed.** The box goes after the first of `GIFT.anchors` found (coupon block
+  first) on `CART` and `CHECKOUT_*` pages, and a 1 s check re-inserts it if Ecwid re-renders it away.
+  The page types and anchors were written without the live DOM; check them in DevTools in test mode.
+- Smoke-tested on 2026-10-27 against a fake DOM and fake Ecwid (Apply wrong/right, the pushed field,
+  storage holding no card number, confirmation), not yet in a real browser.
+
 ## Architecture
 
 Single file: `otccustom.js` — an IIFE, no modules, no build step.
@@ -58,7 +79,13 @@ MutationObserver  Re-applies the cap when Ecwid re-renders the product widget.
                   that ordering is load-bearing, see Timing.
 Ecwid.OnAPILoaded → OnPageLoaded        Entry point; fetches on PRODUCT pages
 Ecwid.OnProductSelectedOptionsChanged   Re-caps after a variation change
-Ecwid.OnCartChanged                     Re-caps after the bag changes
+Ecwid.OnCartChanged                     Re-caps after the bag changes; re-reads the gift card status
+
+Feature 4 — gift card box (CONFIG.giftCard, 'test'):
+  renderGiftCardBox()       Draws the panel after the first GIFT.anchors match
+  applyGiftCard() / removeGiftCard()   /giftcard/apply, /giftcard/remove + pushGiftCardField()
+  refreshGiftCardStatus()   /giftcard/status → "$Y applied", or clears an expired token
+  showGiftCardOnConfirmation()   Remaining balance on the order confirmation, then clears the token
 ```
 
 Injected DOM nodes carry `data-otc-label` or `data-otc-master` attributes. The MutationObserver filters these out to avoid re-triggering on its own mutations.
