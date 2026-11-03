@@ -43,9 +43,9 @@
     // FEATURE 4, the Gift card box on checkout (gift card plan WP-3b). 'off' | 'test' | 'on'.
     // 'test' draws it only in a browser that opened the store once with ?otc-giftcard-test=1
     // (remembered in localStorage; ?otc-giftcard-test=0 forgets it), so it can be tried on the
-    // live store before shoppers see it. **Never 'on' before WP-3c charges the card when the
-    // order arrives:** until then a gift card discount is a discount nobody pays for.
-    giftCard: 'test',
+    // live store before shoppers see it. 'on' since 2026-11-02: WP-3c charges the card when the
+    // order arrives (first production redemption and refund: EW865).
+    giftCard: 'on',
   };
 
   // ─── STUB DATA ─────────────────────────────────────────────────────────────
